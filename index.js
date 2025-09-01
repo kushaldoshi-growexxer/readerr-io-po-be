@@ -8,6 +8,8 @@ const mysql = require('mysql2/promise');
 const bodyParser = require('body-parser');
 const dotenv = require('dotenv');
 const morgan = require('morgan');
+const cors = require("cors");
+const niv = require("node-input-validator");
 
 // Load environment variables
 dotenv.config();
@@ -18,6 +20,13 @@ const app = express();
 // Middleware
 app.use(bodyParser.json({ limit: '50mb' })); // For handling large JSON payloads
 app.use(morgan('dev')); // HTTP request logging
+
+app.use(cors({
+    origin: true,
+    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
+    credentials: true,
+    exposedHeaders: ['x-auth-token']
+}));
 
 // Database connection pool
 const pool = mysql.createPool({
@@ -42,11 +51,11 @@ const initDatabase = async () => {
       await connection.query(`
         CREATE TABLE IF NOT EXISTS psi_purchase_orders (
           unique_order_id VARCHAR(100) PRIMARY KEY,
-          client_id VARCHAR(100) COMMENT 'Supplier Name',
-          vendor_id VARCHAR(100) COMMENT 'Vendor Name',
+          client_id VARCHAR(1000) COMMENT 'Supplier Name',
+          vendor_id VARCHAR(255) COMMENT 'Vendor Name',
           destination VARCHAR(255),
-          location_group VARCHAR(100),
-          location VARCHAR(100),
+          location_group VARCHAR(255),
+          location VARCHAR(255),
           po_date DATE COMMENT 'Order Date',
           due_date DATE COMMENT 'Estimated Delivery Date',
           currency_code VARCHAR(3),
@@ -118,10 +127,11 @@ const executeTransaction = async (callback) => {
 
 // Create Purchase Order API endpoint
 app.post('/api/purchase-orders', async (req, res) => {
+  // console.log("Received request to create purchase order", req.body);
   try {
     // Check if the request contains the new format (extracted_json)
     if (req.body.extracted_json) {
-      console.log("Processing extracted JSON format request with multiple pages");
+      console.log("Processing extracted JSON format request with multiple pages \n");
       
       // Get all pages from the extracted JSON
       const extractedJson = req.body.extracted_json;
@@ -133,19 +143,18 @@ app.post('/api/purchase-orders', async (req, res) => {
           message: 'Invalid extracted_json format: no pages found'
         });
       }
-      
-      console.log(`Found ${pageKeys.length} pages in extracted JSON`);
-      
+
+      console.log(`Found ${pageKeys.length} pages in extracted JSON \n`);
+
       // Use page_1 as the primary page for header information
-      const primaryPage = extractedJson.page_1;
-      
+      const primaryPage = extractedJson.page_1; 
       if (!primaryPage) {
         return res.status(400).json({
           success: false,
           message: 'Invalid extracted_json format: missing page_1'
         });
       }
-      
+
       // Collect line items from all pages
       const allLineItems = [];
 
@@ -155,7 +164,7 @@ app.post('/api/purchase-orders', async (req, res) => {
           allLineItems.push(...page.priority_fields.line_items);
         }
       }
-      
+
       // Map the extracted data to our expected format
       req.body = {
         unique_order_id: primaryPage.priority_fields.po_number?.value || null,
@@ -206,6 +215,26 @@ app.post('/api/purchase-orders', async (req, res) => {
       };
       
       console.log(`Processed ${req.body.line_items.length} line items from all pages`);
+
+      // Required Fields Validation
+    //   const validation = new niv.Validator(req.body, {
+    //     unique_order_id: "required|string",
+    //     client_id: "required|string",
+    //     vendor_id: "required|string",
+    //     destination: "required|string",
+    //     location_group: "required|string",
+    //     // location: "required|string",
+    //   });
+    //   const matched = await validation.check();
+
+    //   if (!matched) {
+    //     console.warn('Warning: Required fields are missing or invalid');
+    //     return res.status(400).json({
+    //       success: false,
+    //       message: 'Validation failed',
+    //       errors: validation.errors
+    //     });
+    //   }
     }
 
     const { 
@@ -228,6 +257,7 @@ app.post('/api/purchase-orders', async (req, res) => {
 
     // Lookup of client_id from crm_classes table
     if (client_id) {
+        console.log("client_id : ----", client_id)
       try {
         const [clientExists] = await pool.query(`
           SELECT id, name FROM crm_classes WHERE name LIKE ? ORDER BY name ASC
@@ -266,7 +296,6 @@ app.post('/api/purchase-orders', async (req, res) => {
         //         AND c.deleted = 0
         //     ORDER BY v.name
         // `, [`%${vendor_id}%`]);
-
         console.log('Vendor Exists:', vendorExists[0]);
 
         if (vendorExists && vendorExists.length === 0) {
@@ -396,7 +425,7 @@ app.post('/api/purchase-orders', async (req, res) => {
         parsedShipDate, load_id, Date.now(), Date.now()
       ]);
 
-      const orderId = orderResult.insertId;
+    //   const orderId = orderResult.insertId;
 
        // Insert line items if they exist
       if (line_items && line_items.length > 0) {
@@ -457,7 +486,7 @@ app.post('/api/purchase-orders', async (req, res) => {
         LEFT JOIN crm_classes c ON po.client_id = c.id
         LEFT JOIN crm_vendors v ON po.vendor_id = v.id
         WHERE po.unique_order_id = ?
-      `, [orderId]);
+      `, [unique_order_id]);
 
       // Get the line items for the created purchase order
       const [items] = await connection.query(`
@@ -465,7 +494,7 @@ app.post('/api/purchase-orders', async (req, res) => {
         FROM psi_purchase_order_items poli
         LEFT JOIN PSI_Products p ON poli.product_id = p.product_id
         WHERE poli.purchase_order_id = ?
-      `, [orderId]);
+      `, [unique_order_id]);
 
       return {
         order: order[0],
@@ -475,6 +504,7 @@ app.post('/api/purchase-orders', async (req, res) => {
 
     res.status(201).json({
       success: true,
+      status: 1,
       message: 'Purchase order created successfully',
       data: result
     });
